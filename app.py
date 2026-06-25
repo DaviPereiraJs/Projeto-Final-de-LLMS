@@ -1,56 +1,34 @@
 import streamlit as st
-import os
-import base64
-from datetime import datetime
-from groq import Groq
 from dotenv import load_dotenv
+from config import ESTILO_PREMIUM, inicializar_cliente_groq
+from utils.helpers import obter_dica_do_turno
+from services.groq_service import GroqService
 
-# Carrega as variáveis de ambiente do arquivo .env para a memória
+# Carrega as variáveis de ambiente locais do .env
 load_dotenv()
 
-# ==========================================
-# 1. CONFIGURAÇÃO INICIAL E API
-# ==========================================
-# Puxa a chave do arquivo .env de forma segura
-chave_api = os.getenv("GROQ_API_KEY")
+# Inicialização da UI do Streamlit
+st.set_page_config(page_title="AgroAssist", page_icon="🌿", layout="centered")
+st.markdown(ESTILO_PREMIUM, unsafe_allow_html=True)
 
-# Proteção caso o .env não seja lido corretamente
-if not chave_api:
-    st.error("⚠️ Chave da API não encontrada. Verifique se o seu arquivo .env está na mesma pasta do projeto e configurado corretamente.")
+# Instanciação segura da camada de serviços
+try:
+    cliente_groq = inicializar_cliente_groq()
+    groq_service = GroqService(cliente_groq)
+except ValueError as error:
+    st.error(f"⚠️ {error}")
+    st.stop()
 
-# Inicializa o cliente do Groq com a chave
-client = Groq(api_key=chave_api)
+st.title("🌿 AgroAssist")
+st.markdown("**Seu Especialista Agrícola Inteligente**")
 
-# Configuração da página do Streamlit
-st.set_page_config(page_title="AgroAssist", page_icon="🚜", layout="centered")
-st.title("🚜 AgroAssist - Seu Especialista Agrícola")
-
-# ==========================================
-# 2. LÓGICA DE DICAS POR HORÁRIO
-# ==========================================
-def obter_dica_do_turno():
-    """Retorna uma dica baseada no horário atual."""
-    hora_atual = datetime.now().hour
-    
-    if 5 <= hora_atual < 12:
-        return "☀️ **Dica da Manhã:** O início do dia é o melhor momento para a irrigação, pois a evaporação é menor. Boa colheita!"
-    elif 12 <= hora_atual < 18:
-        return "🌤️ **Dica da Tarde:** Cuidado com o sol forte! Evite aplicar defensivos agrícolas agora para não queimar as folhas."
-    else:
-        return "🌙 **Dica da Noite:** A noite é ideal para revisar o planejamento de amanhã e verificar a umidade do solo."
-
-# Exibe a dica na tela logo abaixo do título
+# Exibição do aviso dinâmico baseado nas horas
 st.info(obter_dica_do_turno())
 
-# ==========================================
-# 3. MEMÓRIA DO CHAT (SESSION STATE)
-# ==========================================
-# O System Prompt garante que ele só fale de agricultura
+# Gerenciamento do histórico em cache (st.session_state)
 prompt_sistema = """
-Você é um agrônomo especialista altamente qualificado. 
-Sua missão é ajudar agricultores. 
+Você é um agrônomo especialista altamente qualificado. Sua missão é ajudar agricultores. 
 REGRA DE OURO: Você DEVE responder APENAS a perguntas relacionadas à agricultura, plantio, colheita, solo, pragas e clima rural. 
-Se o usuário perguntar sobre esportes, tecnologia, política ou qualquer outro assunto, recuse educadamente e lembre-o de que você é um especialista agrícola.
 """
 
 if "mensagens" not in st.session_state:
@@ -58,74 +36,66 @@ if "mensagens" not in st.session_state:
         {"role": "system", "content": prompt_sistema}
     ]
 
-# ==========================================
-# 4. ANÁLISE DE IMAGEM (BARRA LATERAL)
-# ==========================================
+# --- RENDERIZAÇÃO DA BARRA LATERAL (VISÃO) ---
 with st.sidebar:
     st.header("📸 Análise de Plantio")
-    st.write("Envie uma foto da sua folha, praga ou solo para análise.")
+    st.markdown("Envie uma foto da sua folha, praga ou solo.")
     imagem_enviada = st.file_uploader("Escolha uma imagem", type=["jpg", "jpeg", "png"])
     
     if imagem_enviada:
-        st.image(imagem_enviada, caption="Imagem carregada", use_container_width=True)
+        st.image(imagem_enviada, use_container_width=True, clamp=True)
         if st.button("Analisar Imagem"):
-            with st.spinner("Analisando..."):
-                # Converte a imagem para o formato que a IA entende (Base64)
-                imagem_base64 = base64.b64encode(imagem_enviada.getvalue()).decode('utf-8')
-                
+            with st.spinner("Analisando com visão computacional..."):
                 try:
-                    # Chamada para o modelo de visão do Groq (Llama 3.2 Vision)
-                    resposta_visao = client.chat.completions.create(
-                        model="meta-llama/llama-4-scout-17b-16e-instruct",
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "Atue como um agrônomo. Analise esta imagem e identifique possíveis doenças, pragas ou a condição visível da planta/solo. Seja direto e dê recomendações."},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{imagem_base64}"}}
-                                ]
-                            }
-                        ],
-                        temperature=0.2
-                    )
+                    # Executa a regra isolada no serviço correspondente
+                    texto_analise = groq_service.analisar_imagem(imagem_enviada.getvalue())
                     st.success("Análise concluída!")
-                    st.write(resposta_visao.choices[0].message.content)
+                    st.write(texto_analise)
+                    
+                    # INJEÇÃO DE CONTEXTO: Garante que o histórico capture os dados da imagem
+                    contexto_imagem = f"[CONTEXTO DO SISTEMA: O agricultor enviou uma foto para análise na barra lateral. O diagnóstico de visão computacional da foto indicou: {texto_analise}]"
+                    st.session_state.mensagens.append({"role": "system", "content": contexto_imagem})
+                    
                 except Exception as e:
                     st.error(f"Erro ao analisar a imagem: {e}")
 
-# ==========================================
-# 5. INTERFACE DO CHATBOT PRINCIPAL
-# ==========================================
-# Exibe o histórico de mensagens (escondendo o system prompt do usuário)
+# --- RENDERIZAÇÃO DO HISTÓRICO DE CHAT ---
 for msg in st.session_state.mensagens:
     if msg["role"] != "system":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-# Caixa de texto para o usuário digitar
-pergunta = st.chat_input("Digite sua dúvida agrícola aqui...")
+# --- PROCESSAMENTO ENTRADA DE DADOS (TEXTO OU VRA) ---
+pergunta = None
 
+st.markdown("---")
+st.write("🎤 **Grave sua pergunta:**")
+audio_gravado = st.audio_input("Fale com o assistente", label_visibility="collapsed")
+
+if audio_gravado:
+    with st.spinner("Transcrevendo o áudio..."):
+        try:
+            pergunta = groq_service.transcrever_audio(audio_gravado)
+            st.success(f"Você disse: '{pergunta}'")
+        except Exception as e:
+            st.error(f"Erro ao processar o áudio: {e}")
+
+texto_digitado = st.chat_input("Ou digite sua dúvida agrícola aqui...")
+if texto_digitado:
+    pergunta = texto_digitado
+
+# --- DISPARO DOS MODELOS DE CONVERSAÇÃO ---
 if pergunta:
-    # 1. Mostra a pergunta do usuário na tela
     with st.chat_message("user"):
         st.markdown(pergunta)
     
-    # 2. Salva na memória
     st.session_state.mensagens.append({"role": "user", "content": pergunta})
     
-    # 3. Envia para a IA gerar a resposta
     with st.chat_message("assistant"):
-        with st.spinner("Pensando..."):
+        with st.spinner("Processando..."):
             try:
-                resposta = client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=st.session_state.mensagens,
-                    temperature=0.5
-                )
-                texto_resposta = resposta.choices[0].message.content
+                texto_resposta = groq_service.enviar_mensagem_chat(st.session_state.mensagens)
                 st.markdown(texto_resposta)
-                
-                # 4. Salva a resposta da IA na memória
                 st.session_state.mensagens.append({"role": "assistant", "content": texto_resposta})
             except Exception as e:
                 st.error(f"Erro na comunicação: {e}")
